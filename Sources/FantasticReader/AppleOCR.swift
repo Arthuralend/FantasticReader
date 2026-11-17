@@ -8,6 +8,10 @@ import ImageIO
 enum AppleOCR {
     static let preferredLanguages = ["ru-RU", "uk-UA", "en-US"]
 
+    static func recognize(cgImage: CGImage) async throws -> (text: String, lines: [OCRLine]) {
+        try await Task.detached(priority: .userInitiated) { try recognize(image: cgImage, orientation: .up) }.value
+    }
+
     static func recognize(url: URL, pageIndex: Int?) async throws -> (text: String, lines: [OCRLine]) {
         try await Task.detached(priority: .userInitiated) {
             let (img, orientation) = try image(url: url, pageIndex: pageIndex)
@@ -18,17 +22,17 @@ enum AppleOCR {
     // MARK: Изображение страницы (фото с учётом поворота из EXIF, или страница PDF)
     static func image(url: URL, pageIndex: Int?) throws -> (CGImage, CGImagePropertyOrientation) {
         if let idx = pageIndex {
-            guard let page = PDFDocument(url: url)?.page(at: idx) else { throw GeminiError(message: "Не удалось открыть страницу PDF") }
+            guard let page = PDFDocument(url: url)?.page(at: idx) else { throw OCRError(message: "Не удалось открыть страницу PDF") }
             let b = page.bounds(for: .mediaBox)
             let img = page.thumbnail(of: CGSize(width: b.width * 3, height: b.height * 3), for: .mediaBox)
             guard let cg = img.cgImage(forProposedRect: nil, context: nil, hints: nil) else {
-                throw GeminiError(message: "Не удалось отрисовать страницу PDF")
+                throw OCRError(message: "Не удалось отрисовать страницу PDF")
             }
             return (cg, .up)
         }
         guard let src = CGImageSourceCreateWithURL(url as CFURL, nil),
               let cg = CGImageSourceCreateImageAtIndex(src, 0, nil) else {
-            throw GeminiError(message: "Не удалось открыть изображение")
+            throw OCRError(message: "Не удалось открыть изображение")
         }
         let props = CGImageSourceCopyPropertiesAtIndex(src, 0, nil) as? [CFString: Any]
         let raw = (props?[kCGImagePropertyOrientation] as? UInt32) ?? 1

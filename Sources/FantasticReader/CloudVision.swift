@@ -3,12 +3,11 @@ import ImageIO
 import UniformTypeIdentifiers
 
 /// Google Cloud Vision OCR через REST API (images:annotate, DOCUMENT_TEXT_DETECTION).
-/// Ключ — из Google Cloud Console (проект с включённым Cloud Vision API), не ключ Gemini.
+/// Ключ — из Google Cloud Console (проект с включённым Cloud Vision API).
 enum CloudVision {
-    static func recognize(url: URL, pageIndex: Int?, apiKey: String, languageHints: [String]) async throws -> (text: String, lines: [OCRLine]) {
-        // 1. Изображение страницы → JPEG (с учётом поворота фото; страницы PDF рендерятся)
+    static func recognize(cgImage cg: CGImage, apiKey: String, languageHints: [String]) async throws -> (text: String, lines: [OCRLine]) {
+        // 1. Изображение → JPEG (не больше 4000 px по длинной стороне)
         let (jpeg, w, h) = try await Task.detached(priority: .userInitiated) { () -> (Data, CGFloat, CGFloat) in
-            let cg = try Tesseract.orientedImage(url: url, pageIndex: pageIndex)
             let scaled = downscale(cg, maxSide: 4000)
             return (try encodeJPEG(scaled), CGFloat(scaled.width), CGFloat(scaled.height))
         }.value
@@ -38,10 +37,10 @@ enum CloudVision {
                 continue
             }
             guard status == 200 else {
-                throw GeminiError(message: "Cloud Vision: " + (((json?["error"] as? [String: Any])?["message"] as? String) ?? "HTTP \(status)"))
+                throw OCRError(message: "Cloud Vision: " + (((json?["error"] as? [String: Any])?["message"] as? String) ?? "HTTP \(status)"))
             }
             guard let r = (json?["responses"] as? [[String: Any]])?.first else { return ("", []) }
-            if let e = (r["error"] as? [String: Any])?["message"] as? String { throw GeminiError(message: "Cloud Vision: " + e) }
+            if let e = (r["error"] as? [String: Any])?["message"] as? String { throw OCRError(message: "Cloud Vision: " + e) }
             guard let full = r["fullTextAnnotation"] as? [String: Any] else { return ("", []) }
             return AppleOCR.layout(lines: lines(from: full, width: w, height: h))
         }
@@ -108,10 +107,10 @@ enum CloudVision {
     private static func encodeJPEG(_ img: CGImage) throws -> Data {
         let data = NSMutableData()
         guard let dest = CGImageDestinationCreateWithData(data, UTType.jpeg.identifier as CFString, 1, nil) else {
-            throw GeminiError(message: "Не удалось подготовить изображение")
+            throw OCRError(message: "Не удалось подготовить изображение")
         }
         CGImageDestinationAddImage(dest, img, [kCGImageDestinationLossyCompressionQuality: 0.9] as CFDictionary)
-        guard CGImageDestinationFinalize(dest) else { throw GeminiError(message: "Не удалось подготовить изображение") }
+        guard CGImageDestinationFinalize(dest) else { throw OCRError(message: "Не удалось подготовить изображение") }
         return data as Data
     }
 }

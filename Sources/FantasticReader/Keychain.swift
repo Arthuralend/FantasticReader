@@ -4,7 +4,6 @@ import Security
 /// Хранение API-ключа в связке ключей macOS (а не в коде или файле).
 enum Keychain {
     private static let service = "FantasticReader"
-    static let geminiAccount = "gemini-api-key"
     static let visionAccount = "cloud-vision-api-key"
 
     private static func baseQuery(_ account: String) -> [String: Any] {
@@ -13,7 +12,7 @@ enum Keychain {
          kSecAttrAccount as String: account]
     }
 
-    static func save(_ value: String, account: String = geminiAccount) {
+    static func save(_ value: String, account: String) {
         SecItemDelete(baseQuery(account) as CFDictionary)
         guard !value.isEmpty else { return }
         var q = baseQuery(account)
@@ -21,7 +20,7 @@ enum Keychain {
         SecItemAdd(q as CFDictionary, nil)
     }
 
-    static func load(account: String = geminiAccount) -> String? {
+    static func load(account: String) -> String? {
         var q = baseQuery(account)
         q[kSecReturnData as String] = true
         q[kSecMatchLimit as String] = kSecMatchLimitOne

@@ -8,13 +8,13 @@ enum Exporter {
     static func savePDF(pages: [PageItem], mode: PDFMode, family: String, size: CGFloat, to dest: URL) throws {
         if mode == .text {
             let text = pages.map(\.text).filter { !$0.isEmpty }.joined(separator: "\n\n")
-            guard !text.isEmpty else { throw GeminiError(message: "Нет распознанного текста") }
+            guard !text.isEmpty else { throw OCRError(message: "Нет распознанного текста") }
             try saveTextPDF(attributed(text: text, family: family, size: size), to: dest)
             return
         }
 
         var box = CGRect(x: 0, y: 0, width: 595, height: 842)
-        guard let ctx = CGContext(dest as CFURL, mediaBox: &box, nil) else { throw GeminiError(message: "Не удалось создать PDF") }
+        guard let ctx = CGContext(dest as CFURL, mediaBox: &box, nil) else { throw OCRError(message: "Не удалось создать PDF") }
         var docs: [URL: PDFDocument] = [:]
         var count = 0
 
@@ -42,7 +42,7 @@ enum Exporter {
             count += 1
         }
         ctx.closePDF()
-        if count == 0 { throw GeminiError(message: "Нет страниц для сохранения") }
+        if count == 0 { throw OCRError(message: "Нет страниц для сохранения") }
     }
 
     private static func beginPage(_ ctx: CGContext, _ rect: CGRect) {
@@ -55,9 +55,9 @@ enum Exporter {
     private static func drawTextLayer(_ ctx: CGContext, page p: PageItem, rect: CGRect, family: String) {
         ctx.saveGState()
         ctx.setTextDrawingMode(.invisible)
-        if !p.lines.isEmpty {
-            // Apple Vision знает положение каждой строки — текст ложится точно на неё.
-            for l in p.lines {
+        if !p.visibleLines.isEmpty {
+            // Положение каждой строки известно — текст ложится точно на неё.
+            for l in p.visibleLines {
                 let b = CGRect(x: rect.minX + l.rect.minX * rect.width, y: rect.minY + l.rect.minY * rect.height,
                                width: l.rect.width * rect.width, height: l.rect.height * rect.height)
                 guard b.width > 1, b.height > 1 else { continue }
@@ -73,7 +73,7 @@ enum Exporter {
                 ctx.restoreGState()
             }
         } else if !p.text.isEmpty {
-            // Gemini не даёт координат: текст распределяется по всей странице.
+            // Координат нет (например, текст набран вручную): распределяем по странице.
             let plain = stripMarkup(p.text)
             let area = rect.insetBy(dx: rect.width * 0.06, dy: rect.height * 0.05)
             var size: CGFloat = 14
@@ -94,7 +94,7 @@ enum Exporter {
     private static func saveTextPDF(_ attr: NSAttributedString, to dest: URL) throws {
         let page = CGRect(x: 0, y: 0, width: 595, height: 842)
         var box = page
-        guard let ctx = CGContext(dest as CFURL, mediaBox: &box, nil) else { throw GeminiError(message: "Не удалось создать PDF") }
+        guard let ctx = CGContext(dest as CFURL, mediaBox: &box, nil) else { throw OCRError(message: "Не удалось создать PDF") }
         let fs = CTFramesetterCreateWithAttributedString(attr)
         let path = CGPath(rect: page.insetBy(dx: 56, dy: 56), transform: nil)
         var pos = 0

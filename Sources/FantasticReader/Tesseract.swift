@@ -31,7 +31,7 @@ enum Tesseract {
         }
         let (tmp, resp) = try await URLSession.shared.download(from: url)
         guard (resp as? HTTPURLResponse)?.statusCode == 200 else {
-            throw GeminiError(message: "Не удалось скачать язык \(code)")
+            throw OCRError(message: "Не удалось скачать язык \(code)")
         }
         let dest = dataDir.appendingPathComponent("\(code).traineddata")
         try? FileManager.default.removeItem(at: dest)
@@ -44,12 +44,12 @@ enum Tesseract {
         let (data, resp) = try await URLSession.shared.data(from: api)
         guard (resp as? HTTPURLResponse)?.statusCode == 200,
               let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
-            throw GeminiError(message: "Hugging Face недоступен. Скачайте файл вручную: huggingface.co/\(repo) и нажмите «Добавить файл…»")
+            throw OCRError(message: "Hugging Face недоступен. Скачайте файл вручную: huggingface.co/\(repo) и нажмите «Добавить файл…»")
         }
         let files = (json["siblings"] as? [[String: Any]] ?? []).compactMap { $0["rfilename"] as? String }
             .filter { $0.hasSuffix(".traineddata") }
         guard let file = files.first(where: { $0.lowercased().contains("calfa") }) ?? files.first else {
-            throw GeminiError(message: "В huggingface.co/\(repo) не найден файл .traineddata. Скачайте вручную и нажмите «Добавить файл…»")
+            throw OCRError(message: "В huggingface.co/\(repo) не найден файл .traineddata. Скачайте вручную и нажмите «Добавить файл…»")
         }
         let path = file.split(separator: "/").map { String($0).addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) ?? String($0) }
             .joined(separator: "/")
@@ -61,7 +61,7 @@ enum Tesseract {
     static func importModel(from src: URL) throws -> String {
         let raw = src.deletingPathExtension().lastPathComponent
         let code = String(raw.map { $0.isLetter || $0.isNumber ? $0 : "_" })
-        guard !code.isEmpty else { throw GeminiError(message: "Неверное имя файла") }
+        guard !code.isEmpty else { throw OCRError(message: "Неверное имя файла") }
         let dest = dataDir.appendingPathComponent("\(code).traineddata")
         try? FileManager.default.removeItem(at: dest)
         try FileManager.default.copyItem(at: src, to: dest)
@@ -72,24 +72,23 @@ enum Tesseract {
         try? FileManager.default.removeItem(at: dataDir.appendingPathComponent("\(code).traineddata"))
     }
 
-    static func recognize(url: URL, pageIndex: Int?, languages: [String]) async throws -> (text: String, lines: [OCRLine]) {
+    static func recognize(cgImage cg: CGImage, languages: [String]) async throws -> (text: String, lines: [OCRLine]) {
         guard let bin = binary else {
-            throw GeminiError(message: "Tesseract не установлен. В Терминале: brew install tesseract")
+            throw OCRError(message: "Tesseract не установлен. В Терминале: brew install tesseract")
         }
         let langs = languages.filter { installed().contains($0) }
         guard !langs.isEmpty else {
-            throw GeminiError(message: "Не выбраны языки Tesseract: Настройки → Языки Tesseract")
+            throw OCRError(message: "Не выбраны языки Tesseract: Настройки → Языки Tesseract")
         }
         let dir = dataDir
         return try await Task.detached(priority: .userInitiated) {
-            let cg = try orientedImage(url: url, pageIndex: pageIndex)
             let base = FileManager.default.temporaryDirectory.appendingPathComponent("fr-\(UUID().uuidString)")
             let png = base.appendingPathExtension("png")
             let tsv = base.appendingPathExtension("tsv")
             defer { try? FileManager.default.removeItem(at: png); try? FileManager.default.removeItem(at: tsv) }
 
             guard let dest = CGImageDestinationCreateWithURL(png as CFURL, UTType.png.identifier as CFString, 1, nil) else {
-                throw GeminiError(message: "Не удалось подготовить изображение")
+                throw OCRError(message: "Не удалось подготовить изображение")
             }
             CGImageDestinationAddImage(dest, cg, nil)
             CGImageDestinationFinalize(dest)
@@ -98,7 +97,7 @@ enum Tesseract {
             p.executableURL = URL(fileURLWithPath: bin)
             p.arguments = [png.path, base.path, "--tessdata-dir", dir.path, "-l", langs.joined(separator: "+"),
                            "--psm", "3", "-c", "tessedit_create_txt=0", "-c", "tessedit_create_tsv=1"]
-            if pageIndex != nil { p.arguments! += ["--dpi", "216"] }
+            p.arguments! += ["--dpi", "300"]
             let err = Pipe()
             p.standardError = err
             p.standardOutput = FileHandle.nullDevice
@@ -107,7 +106,7 @@ enum Tesseract {
             p.waitUntilExit()
             guard p.terminationStatus == 0, let out = try? String(contentsOf: tsv, encoding: .utf8) else {
                 let msg = String(decoding: errData, as: UTF8.self).trimmingCharacters(in: .whitespacesAndNewlines)
-                throw GeminiError(message: "Tesseract: " + String(msg.suffix(300)))
+                throw OCRError(message: "Tesseract: " + String(msg.suffix(300)))
             }
             return AppleOCR.layout(lines: parseTSV(out, width: CGFloat(cg.width), height: CGFloat(cg.height)))
         }.value
@@ -121,7 +120,7 @@ enum Tesseract {
                                      kCGImageSourceThumbnailMaxPixelSize: 10000]
         guard let src = CGImageSourceCreateWithURL(url as CFURL, nil),
               let cg = CGImageSourceCreateThumbnailAtIndex(src, 0, opts as CFDictionary) else {
-            throw GeminiError(message: "Не удалось открыть изображение")
+            throw OCRError(message: "Не удалось открыть изображение")
         }
         return cg
     }

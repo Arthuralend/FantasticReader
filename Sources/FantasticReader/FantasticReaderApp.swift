@@ -50,7 +50,7 @@ struct ContentView: View {
             return true
         }
         .sheet(isPresented: $state.showSettings) { SettingsView().environmentObject(state) }
-        .onAppear { if state.apiKey.isEmpty { state.showSettings = true } }
+        .onAppear { if state.engine == .cloudVision && state.visionKey.isEmpty { state.showSettings = true } }
     }
 
     // MARK: Верхняя панель (как в FineReader)
@@ -62,8 +62,8 @@ struct ContentView: View {
                 Picker("", selection: $state.engine) {
                     ForEach(OCREngine.allCases) { Text($0.title).tag($0) }
                 }
-                .pickerStyle(.segmented).labelsHidden().frame(width: 400)
-                .help("Gemini — облако, все языки. Apple Vision — на Mac: русский, украинский, английский и др. Tesseract — на Mac, языки скачиваются в Настройках.")
+                .pickerStyle(.segmented).labelsHidden().frame(width: 420)
+                .help("Google Cloud Vision — облако, много языков (в т.ч. армянский). Apple Vision — на Mac: русский, украинский, английский и др. Tesseract — на Mac, языки скачиваются в Настройках.")
                 Text("Режим распознавания").font(.system(size: 11))
             }
             .padding(.horizontal, 6)
@@ -94,9 +94,7 @@ struct ContentView: View {
                 ForEach(PDFMode.allCases) { Text($0.title).tag($0) }
             }
             .pickerStyle(.radioGroup).labelsHidden()
-            Text(state.engine != .gemini
-                 ? "Текстовый слой ложится точно на строки изображения."
-                 : "С Gemini текстовый слой не привязан к строкам: поиск и копирование работают, выделение — приблизительно.")
+            Text("Текстовый слой ложится точно на строки изображения (только из оставленных областей).")
                 .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
             Text("Шрифт: \(state.fontFamily.isEmpty ? "авто" : state.fontFamily), \(Int(state.fontSize)) pt — меняется в Настройках")
                 .font(.caption).foregroundStyle(.secondary)
@@ -139,7 +137,29 @@ struct ContentView: View {
     // MARK: Изображение
     private var imagePane: some View {
         VStack(spacing: 0) {
-            PanelHeader(title: "Изображение")
+            HStack(spacing: 8) {
+                Text("Изображение").font(.system(size: 11, weight: .semibold))
+                Spacer()
+                if state.selectedIndex != nil {
+                    Toggle("Области", isOn: $state.showRegions).toggleStyle(.checkbox)
+                    Toggle(isOn: $state.drawMode) { Label("Новая область", systemImage: "plus.rectangle") }
+                        .toggleStyle(.button)
+                        .help("Нарисуйте рамку мышью на изображении")
+                    Button { state.deleteSelectedRegion() } label: { Label("Удалить", systemImage: "trash") }
+                        .disabled(state.selectedRegion == nil)
+                        .help("Удалить выделенную область (или правый клик по рамке → Удалить)")
+                    Button { Task { await state.recognizeRegions() } } label: {
+                        Label("Распознать области", systemImage: "text.viewfinder")
+                    }
+                    .disabled(!state.hasPendingRegions || state.busy)
+                    .help("Распознать новые (оранжевые) области")
+                }
+            }
+            .font(.system(size: 11))
+            .controlSize(.small)
+            .padding(.horizontal, 8).padding(.vertical, 3)
+            .background(Color(nsColor: .windowBackgroundColor))
+            .overlay(Divider(), alignment: .bottom)
             ZStack {
                 Color(nsColor: .underPageBackgroundColor)
                 if let img = state.preview {
@@ -147,6 +167,11 @@ struct ContentView: View {
                         ScrollView([.horizontal, .vertical]) {
                             Image(nsImage: img).resizable().scaledToFit()
                                 .frame(width: max(geo.size.width - 24, 100) * state.zoom)
+                                .overlay(GeometryReader { g in
+                                    if state.showRegions, let id = state.selection {
+                                        RegionOverlay(pageID: id, size: g.size)
+                                    }
+                                })
                                 .shadow(radius: 3).padding(12)
                         }
                     }
@@ -184,7 +209,7 @@ struct ContentView: View {
                 Text(state.status).foregroundStyle(.secondary)
             }
             Spacer()
-            Text(state.engine == .apple ? "Apple Vision · на устройстве" : state.engine == .cloudVision ? "Google Cloud Vision" : state.engine == .tesseract ? "Tesseract · \(state.tessLanguages.joined(separator: "+"))" : state.model).font(.caption).foregroundStyle(.secondary)
+            Text(state.engine == .apple ? "Apple Vision · на устройстве" : state.engine == .cloudVision ? "Google Cloud Vision" : "Tesseract · \(state.tessLanguages.joined(separator: "+"))").font(.caption).foregroundStyle(.secondary)
             Image(systemName: "minus.magnifyingglass").foregroundStyle(.secondary)
             Slider(value: $state.zoom, in: 0.5...3).frame(width: 120)
             Image(systemName: "plus.magnifyingglass").foregroundStyle(.secondary)
@@ -240,28 +265,11 @@ struct SettingsView: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
             Text("Настройки").font(.title3.bold())
-            Text("Gemini API key").font(.headline)
-            SecureField("AIza…", text: $state.apiKey).textFieldStyle(.roundedBorder)
-            Text("Ключ хранится в связке ключей macOS. Получить: aistudio.google.com → Get API key.")
-                .font(.caption).foregroundStyle(.secondary)
-            Text("Модель").font(.headline).padding(.top, 6)
-            TextField(GeminiClient.defaultModel, text: $state.model).textFieldStyle(.roundedBorder)
-            HStack {
-                Button("Загрузить список моделей") { Task { await state.loadModels() } }
-                if let st = state.modelsStatus { Text(st).font(.caption).foregroundStyle(.secondary) }
-            }
-            if !state.availableModels.isEmpty {
-                Picker("Выбрать", selection: $state.model) {
-                    ForEach(state.availableModels) { m in Text("\(m.title) (\(m.id))").tag(m.id) }
-                }
-            }
-            Text("Название модели в приложении Gemini может отличаться от ID в API. Выбирайте из списка. Для OCR подойдёт любая flash-модель.")
-                .font(.caption).foregroundStyle(.secondary)
-            Text("Google Cloud Vision").font(.headline).padding(.top, 6)
-            SecureField("Ключ Cloud Vision API", text: $state.visionKey).textFieldStyle(.roundedBorder)
+            Text("Google Cloud Vision").font(.headline)
+            SecureField("Ключ Google Cloud Vision API", text: $state.visionKey).textFieldStyle(.roundedBorder)
             TextField("Подсказки языков, напр. hy, ru (пусто — автоопределение)", text: $state.visionHints)
                 .textFieldStyle(.roundedBorder)
-            Text("Ключ из console.cloud.google.com: включите Cloud Vision API → Credentials → Create API key. Ключ Gemini здесь не подходит.")
+            Text("Ключ из console.cloud.google.com: включите Cloud Vision API → Credentials → Create API key.")
                 .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
             Text("Tesseract").font(.headline).padding(.top, 6)
             HStack {
@@ -394,5 +402,131 @@ struct TesseractLanguagesView: View {
             } catch { err = error.localizedDescription }
             downloading.remove(code)
         }
+    }
+}
+
+// MARK: - Области на изображении
+
+enum RegionGeometry {
+    /// 0…1 снизу-слева → точки вида сверху-слева
+    static func toView(_ r: CGRect, _ s: CGSize) -> CGRect {
+        CGRect(x: r.minX * s.width, y: (1 - r.maxY) * s.height, width: r.width * s.width, height: r.height * s.height)
+    }
+    static func toNorm(_ v: CGRect, _ s: CGSize) -> CGRect {
+        CGRect(x: v.minX / s.width, y: 1 - v.maxY / s.height, width: v.width / s.width, height: v.height / s.height)
+    }
+}
+
+struct RegionOverlay: View {
+    @EnvironmentObject var state: AppState
+    let pageID: UUID
+    let size: CGSize
+    @State private var drawStart: CGPoint?
+    @State private var drawEnd: CGPoint?
+
+    private var regions: [Region] { state.pages.first { $0.id == pageID }?.regions ?? [] }
+
+    var body: some View {
+        ZStack(alignment: .topLeading) {
+            Color.white.opacity(0.001)
+                .frame(width: size.width, height: size.height)
+                .onTapGesture { state.selectedRegion = nil }
+                .gesture(DragGesture(minimumDistance: 4)
+                    .onChanged { v in
+                        guard state.drawMode else { return }
+                        drawStart = v.startLocation; drawEnd = v.location
+                    }
+                    .onEnded { _ in
+                        if state.drawMode, let a = drawStart, let b = drawEnd {
+                            let r = CGRect(x: min(a.x, b.x), y: min(a.y, b.y), width: abs(a.x - b.x), height: abs(a.y - b.y))
+                            if r.width > 8 && r.height > 8 { state.addRegion(RegionGeometry.toNorm(r, size)) }
+                            state.drawMode = false
+                        }
+                        drawStart = nil; drawEnd = nil
+                    })
+            ForEach(regions) { r in RegionBox(region: r, size: size) }
+            if let a = drawStart, let b = drawEnd {
+                Rectangle()
+                    .stroke(style: StrokeStyle(lineWidth: 1.5, dash: [5, 3]))
+                    .foregroundColor(.blue)
+                    .frame(width: abs(a.x - b.x), height: abs(a.y - b.y))
+                    .position(x: (a.x + b.x) / 2, y: (a.y + b.y) / 2)
+            }
+        }
+        .frame(width: size.width, height: size.height)
+    }
+}
+
+struct RegionBox: View {
+    @EnvironmentObject var state: AppState
+    let region: Region
+    let size: CGSize
+    @State private var orig: CGRect?
+
+    enum Corner: CaseIterable, Identifiable {
+        case tl, tr, bl, br
+        var id: Self { self }
+        func point(_ r: CGRect) -> CGPoint {
+            switch self {
+            case .tl: return CGPoint(x: r.minX, y: r.minY)
+            case .tr: return CGPoint(x: r.maxX, y: r.minY)
+            case .bl: return CGPoint(x: r.minX, y: r.maxY)
+            case .br: return CGPoint(x: r.maxX, y: r.maxY)
+            }
+        }
+        func resize(_ r: CGRect, by t: CGSize) -> CGRect {
+            var x0 = r.minX, y0 = r.minY, x1 = r.maxX, y1 = r.maxY
+            switch self {
+            case .tl: x0 += t.width; y0 += t.height
+            case .tr: x1 += t.width; y0 += t.height
+            case .bl: x0 += t.width; y1 += t.height
+            case .br: x1 += t.width; y1 += t.height
+            }
+            return CGRect(x: min(x0, x1), y: min(y0, y1), width: abs(x1 - x0), height: abs(y1 - y0))
+        }
+    }
+
+    var body: some View {
+        let vr = RegionGeometry.toView(region.rect, size)
+        let selected = state.selectedRegion == region.id
+        let color: Color = region.needsOCR ? .orange : .green
+        ZStack {
+            ZStack {
+                Rectangle().fill(color.opacity(selected ? 0.18 : 0.07))
+                Rectangle().stroke(selected ? Color.blue : color, lineWidth: selected ? 2 : 1.5)
+            }
+            .frame(width: max(vr.width, 1), height: max(vr.height, 1))
+            .contentShape(Rectangle())
+            .position(x: vr.midX, y: vr.midY)
+            .onTapGesture { state.selectedRegion = region.id }
+            .gesture(DragGesture(minimumDistance: 2)
+                .onChanged { v in
+                    state.selectedRegion = region.id
+                    if orig == nil { orig = vr }
+                    let o = orig ?? vr
+                    state.updateRegion(region.id, rect: RegionGeometry.toNorm(o.offsetBy(dx: v.translation.width, dy: v.translation.height), size))
+                }
+                .onEnded { _ in orig = nil; state.commitRegion(region.id) })
+            .contextMenu {
+                Button("Удалить область") { state.deleteRegion(region.id) }
+            }
+
+            if selected {
+                ForEach(Corner.allCases) { c in
+                    Rectangle().fill(Color.white)
+                        .overlay(Rectangle().stroke(Color.blue, lineWidth: 1))
+                        .frame(width: 9, height: 9)
+                        .position(c.point(vr))
+                        .gesture(DragGesture(minimumDistance: 1)
+                            .onChanged { v in
+                                if orig == nil { orig = vr }
+                                let o = orig ?? vr
+                                state.updateRegion(region.id, rect: RegionGeometry.toNorm(c.resize(o, by: v.translation), size))
+                            }
+                            .onEnded { _ in orig = nil; state.commitRegion(region.id) })
+                }
+            }
+        }
+        .frame(width: size.width, height: size.height)
     }
 }
