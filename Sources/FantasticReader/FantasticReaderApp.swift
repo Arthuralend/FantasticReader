@@ -57,6 +57,16 @@ struct ContentView: View {
         HStack(spacing: 4) {
             RibbonButton(title: "Открыть", icon: "folder") { showImporter = true }
             RibbonSeparator()
+            VStack(spacing: 4) {
+                Picker("", selection: $state.engine) {
+                    ForEach(OCREngine.allCases) { Text($0.title).tag($0) }
+                }
+                .pickerStyle(.segmented).labelsHidden().frame(width: 200)
+                .help("Gemini — облако, все языки. Apple Vision — на Mac, без интернета: русский, украинский, английский и др.")
+                Text("Режим распознавания").font(.system(size: 11))
+            }
+            .padding(.horizontal, 6)
+            RibbonSeparator()
             RibbonButton(title: "Распознать", icon: "text.viewfinder",
                          disabled: state.selection == nil || state.busy) { Task { await state.recognizeSelected() } }
             RibbonButton(title: "Распознать все", icon: "doc.text.magnifyingglass",
@@ -151,7 +161,7 @@ struct ContentView: View {
                 Text(state.status).foregroundStyle(.secondary)
             }
             Spacer()
-            Text(state.model).font(.caption).foregroundStyle(.secondary)
+            Text(state.engine == .apple ? "Apple Vision · на устройстве" : state.model).font(.caption).foregroundStyle(.secondary)
             Image(systemName: "minus.magnifyingglass").foregroundStyle(.secondary)
             Slider(value: $state.zoom, in: 0.5...3).frame(width: 120)
             Image(systemName: "plus.magnifyingglass").foregroundStyle(.secondary)

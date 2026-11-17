@@ -10,6 +10,12 @@ struct PageItem: Identifiable {
     var done = false
 }
 
+enum OCREngine: String, CaseIterable, Identifiable {
+    case gemini, apple
+    var id: String { rawValue }
+    var title: String { self == .gemini ? "Gemini" : "Apple Vision" }
+}
+
 @MainActor
 final class AppState: ObservableObject {
     @Published var pages: [PageItem] = []
@@ -21,6 +27,9 @@ final class AppState: ObservableObject {
     @Published var apiKey = Keychain.load() ?? ""
     @Published var model = UserDefaults.standard.string(forKey: "model") ?? GeminiClient.defaultModel
     @Published var showSettings = false
+    @Published var engine = OCREngine(rawValue: UserDefaults.standard.string(forKey: "engine") ?? "") ?? .gemini {
+        didSet { UserDefaults.standard.set(engine.rawValue, forKey: "engine") }
+    }
     @Published var availableModels: [ModelInfo] = []
     @Published var modelsStatus: String?
 
@@ -77,7 +86,7 @@ final class AppState: ObservableObject {
     }
 
     private func run(_ work: () async throws -> Void) async {
-        guard !apiKey.trimmingCharacters(in: .whitespaces).isEmpty else { showSettings = true; return }
+        if engine == .gemini && apiKey.trimmingCharacters(in: .whitespaces).isEmpty { showSettings = true; return }
         busy = true; error = nil
         defer { busy = false }
         do { try await work(); status = "Готово" }
@@ -87,10 +96,16 @@ final class AppState: ObservableObject {
     private func recognize(index i: Int) async throws {
         status = "Распознавание: страница \(i + 1) из \(pages.count)…"
         let url = pages[i].url
-        let data = try Data(contentsOf: url)
-        let mime = UTType(filenameExtension: url.pathExtension)?.preferredMIMEType ?? "image/jpeg"
-        let client = GeminiClient(apiKey: apiKey.trimmingCharacters(in: .whitespacesAndNewlines), model: model)
-        let text = try await client.recognize(data: data, mimeType: mime)
+        let text: String
+        if engine == .apple {
+            text = try await AppleOCR.recognize(url: url)
+            if text.isEmpty { throw GeminiError(message: "Apple Vision не нашёл текст") }
+        } else {
+            let data = try Data(contentsOf: url)
+            let mime = UTType(filenameExtension: url.pathExtension)?.preferredMIMEType ?? "image/jpeg"
+            let client = GeminiClient(apiKey: apiKey.trimmingCharacters(in: .whitespacesAndNewlines), model: model)
+            text = try await client.recognize(data: data, mimeType: mime)
+        }
         guard pages.indices.contains(i) else { return }
         pages[i].text = text
         pages[i].done = true
