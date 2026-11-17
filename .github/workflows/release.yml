@@ -16,10 +16,11 @@ jobs:
           name: FantasticReader-dmg
           path: FantasticReader.dmg
       - name: Publish release
-        if: startsWith(github.ref, 'refs/tags/')
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          gh release create "${{ github.ref_name }}" FantasticReader.dmg \
-            --title "FantasticReader ${{ github.ref_name }}" \
+          TAG="${{ github.ref_type == 'tag' && github.ref_name || 'v1.0' }}"
+          gh release view "$TAG" >/dev/null 2>&1 || gh release create "$TAG" --target "${{ github.sha }}" \
+            --title "FantasticReader $TAG" \
             --notes "Скачайте FantasticReader.dmg, откройте и перетащите приложение в Applications. Если macOS блокирует запуск - правый клик, Открыть."
+          gh release upload "$TAG" FantasticReader.dmg --clobber
