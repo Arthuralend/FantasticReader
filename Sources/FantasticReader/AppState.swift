@@ -36,9 +36,15 @@ enum PDFMode: String, CaseIterable, Identifiable {
 }
 
 enum OCREngine: String, CaseIterable, Identifiable {
-    case gemini, apple
+    case gemini, apple, tesseract
     var id: String { rawValue }
-    var title: String { self == .gemini ? "Gemini" : "Apple Vision" }
+    var title: String {
+        switch self {
+        case .gemini: return "Gemini"
+        case .apple: return "Apple Vision"
+        case .tesseract: return "Tesseract"
+        }
+    }
 }
 
 @MainActor
@@ -65,6 +71,12 @@ final class AppState: ObservableObject {
     }
     @Published var fontSize = (UserDefaults.standard.object(forKey: "fontSize") as? Double) ?? 12 {
         didSet { UserDefaults.standard.set(fontSize, forKey: "fontSize") }
+    }
+    @Published var tessLanguages = UserDefaults.standard.stringArray(forKey: "tessLanguages") ?? [] {
+        didSet { UserDefaults.standard.set(tessLanguages, forKey: "tessLanguages") }
+    }
+    @Published var tessBest = UserDefaults.standard.bool(forKey: "tessBest") {
+        didSet { UserDefaults.standard.set(tessBest, forKey: "tessBest") }
     }
     @Published var availableModels: [ModelInfo] = []
     @Published var modelsStatus: String?
@@ -153,6 +165,10 @@ final class AppState: ObservableObject {
             let r = try await AppleOCR.recognize(url: item.url, pageIndex: item.pageIndex)
             text = r.text; lines = r.lines
             if text.isEmpty { throw GeminiError(message: "Apple Vision не нашёл текст") }
+        } else if engine == .tesseract {
+            let r = try await Tesseract.recognize(url: item.url, pageIndex: item.pageIndex, languages: tessLanguages)
+            text = r.text; lines = r.lines
+            if text.isEmpty { throw GeminiError(message: "Tesseract не нашёл текст") }
         } else {
             let (data, mime) = try payload(item)
             let client = GeminiClient(apiKey: apiKey.trimmingCharacters(in: .whitespacesAndNewlines), model: model)

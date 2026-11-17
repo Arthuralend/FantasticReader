@@ -16,7 +16,7 @@ enum AppleOCR {
     }
 
     // MARK: Изображение страницы (фото с учётом поворота из EXIF, или страница PDF)
-    private static func image(url: URL, pageIndex: Int?) throws -> (CGImage, CGImagePropertyOrientation) {
+    static func image(url: URL, pageIndex: Int?) throws -> (CGImage, CGImagePropertyOrientation) {
         if let idx = pageIndex {
             guard let page = PDFDocument(url: url)?.page(at: idx) else { throw GeminiError(message: "Не удалось открыть страницу PDF") }
             let b = page.bounds(for: .mediaBox)
@@ -47,19 +47,24 @@ enum AppleOCR {
     }
 
     // MARK: Сборка строк в абзацы
-    private struct Line { var text: String; var minX, maxX, midY, h: CGFloat }
+    /// Строка/фрагмент текста: координаты 0…1, начало снизу слева.
+    struct Line { var text: String; var minX, maxX, midY, h: CGFloat }
 
     private static func median(_ v: [CGFloat]) -> CGFloat {
         let s = v.sorted(); return s.isEmpty ? 0 : s[s.count / 2]
     }
 
     private static func layout(_ obs: [VNRecognizedTextObservation]) -> (text: String, lines: [OCRLine]) {
-        // Vision: координаты 0…1, начало снизу слева
-        let items = obs.compactMap { o -> Line? in
+        layout(lines: obs.compactMap { o -> Line? in
             guard let t = o.topCandidates(1).first?.string else { return nil }
             let b = o.boundingBox
             return Line(text: t, minX: b.minX, maxX: b.maxX, midY: b.midY, h: b.height)
-        }.sorted { $0.midY > $1.midY }
+        })
+    }
+
+    /// Общая сборка строк в абзацы (используется и для Apple Vision, и для Tesseract).
+    static func layout(lines raw: [Line]) -> (text: String, lines: [OCRLine]) {
+        let items = raw.sorted { $0.midY > $1.midY }
 
         // Фрагменты на одной высоте — одна строка
         var lines: [Line] = []

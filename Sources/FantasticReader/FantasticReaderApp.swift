@@ -62,8 +62,8 @@ struct ContentView: View {
                 Picker("", selection: $state.engine) {
                     ForEach(OCREngine.allCases) { Text($0.title).tag($0) }
                 }
-                .pickerStyle(.segmented).labelsHidden().frame(width: 200)
-                .help("Gemini — облако, все языки. Apple Vision — на Mac, без интернета: русский, украинский, английский и др.")
+                .pickerStyle(.segmented).labelsHidden().frame(width: 300)
+                .help("Gemini — облако, все языки. Apple Vision — на Mac: русский, украинский, английский и др. Tesseract — на Mac, языки скачиваются в Настройках.")
                 Text("Режим распознавания").font(.system(size: 11))
             }
             .padding(.horizontal, 6)
@@ -94,7 +94,7 @@ struct ContentView: View {
                 ForEach(PDFMode.allCases) { Text($0.title).tag($0) }
             }
             .pickerStyle(.radioGroup).labelsHidden()
-            Text(state.engine == .apple
+            Text(state.engine != .gemini
                  ? "Текстовый слой ложится точно на строки изображения."
                  : "С Gemini текстовый слой не привязан к строкам: поиск и копирование работают, выделение — приблизительно.")
                 .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
@@ -184,7 +184,7 @@ struct ContentView: View {
                 Text(state.status).foregroundStyle(.secondary)
             }
             Spacer()
-            Text(state.engine == .apple ? "Apple Vision · на устройстве" : state.model).font(.caption).foregroundStyle(.secondary)
+            Text(state.engine == .apple ? "Apple Vision · на устройстве" : state.engine == .tesseract ? "Tesseract · \(state.tessLanguages.joined(separator: "+"))" : state.model).font(.caption).foregroundStyle(.secondary)
             Image(systemName: "minus.magnifyingglass").foregroundStyle(.secondary)
             Slider(value: $state.zoom, in: 0.5...3).frame(width: 120)
             Image(systemName: "plus.magnifyingglass").foregroundStyle(.secondary)
@@ -236,6 +236,7 @@ struct PanelHeader: View {
 
 struct SettingsView: View {
     @EnvironmentObject var state: AppState
+    @State private var showLangs = false
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
             Text("Настройки").font(.title3.bold())
@@ -256,6 +257,12 @@ struct SettingsView: View {
             }
             Text("Название модели в приложении Gemini может отличаться от ID в API. Выбирайте из списка. Для OCR подойдёт любая flash-модель.")
                 .font(.caption).foregroundStyle(.secondary)
+            Text("Tesseract").font(.headline).padding(.top, 6)
+            HStack {
+                Button("Языки Tesseract…") { showLangs = true }
+                Text(state.tessLanguages.isEmpty ? "языки не выбраны" : state.tessLanguages.joined(separator: " + "))
+                    .font(.caption).foregroundStyle(.secondary)
+            }
             Text("Шрифт для DOCX и PDF").font(.headline).padding(.top, 6)
             HStack {
                 Picker("", selection: $state.fontFamily) {
@@ -278,5 +285,90 @@ struct SettingsView: View {
             }.padding(.top, 8)
         }
         .padding(20).frame(width: 520)
+        .sheet(isPresented: $showLangs) { TesseractLanguagesView().environmentObject(state) }
+    }
+}
+
+struct TesseractLanguagesView: View {
+    @EnvironmentObject var state: AppState
+    @Environment(\.dismiss) private var dismiss
+    @State private var installed = Tesseract.installed()
+    @State private var downloading: Set<String> = []
+    @State private var search = ""
+    @State private var err: String?
+
+    private var filtered: [Tesseract.Language] {
+        Tesseract.languages
+            .filter { search.isEmpty || $0.name.localizedCaseInsensitiveContains(search) || $0.code.contains(search.lowercased()) }
+            .sorted { (installed.contains($0.code) ? 0 : 1, $0.name) < (installed.contains($1.code) ? 0 : 1, $1.name) }
+    }
+
+    private func selected(_ code: String) -> Binding<Bool> {
+        Binding(get: { state.tessLanguages.contains(code) },
+                set: { on in
+                    state.tessLanguages.removeAll { $0 == code }
+                    if on { state.tessLanguages.append(code) }
+                })
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            Text("Языки Tesseract").font(.title3.bold())
+            if let bin = Tesseract.binary {
+                Label("Tesseract найден: \(bin)", systemImage: "checkmark.circle").font(.caption).foregroundStyle(.green)
+            } else {
+                Label("Tesseract не установлен. В Терминале: brew install tesseract", systemImage: "exclamationmark.triangle")
+                    .font(.caption).foregroundStyle(.orange).textSelection(.enabled)
+            }
+            Picker("Модели", selection: $state.tessBest) {
+                Text("Быстрые (меньше, быстрее)").tag(false)
+                Text("Точные (больше, точнее)").tag(true)
+            }
+            .pickerStyle(.segmented)
+            Text("Влияет на новые загрузки. Чтобы сменить уже скачанный язык — удалите и скачайте снова.")
+                .font(.caption).foregroundStyle(.secondary)
+            TextField("Поиск языка", text: $search).textFieldStyle(.roundedBorder)
+            List(filtered) { lang in
+                HStack {
+                    Toggle("", isOn: selected(lang.code)).labelsHidden().toggleStyle(.checkbox)
+                        .disabled(!installed.contains(lang.code))
+                    Text(lang.name)
+                    Text(lang.code).font(.caption).foregroundStyle(.secondary)
+                    Spacer()
+                    if downloading.contains(lang.code) {
+                        ProgressView().controlSize(.small)
+                    } else if installed.contains(lang.code) {
+                        Button("Удалить") {
+                            Tesseract.delete(lang.code)
+                            state.tessLanguages.removeAll { $0 == lang.code }
+                            installed = Tesseract.installed()
+                        }
+                    } else {
+                        Button("Скачать") { download(lang.code) }
+                    }
+                }
+            }
+            .frame(height: 340)
+            if let err { Text(err).font(.caption).foregroundStyle(.red) }
+            HStack {
+                Text("Используются: \(state.tessLanguages.isEmpty ? "—" : state.tessLanguages.joined(separator: " + "))")
+                    .font(.caption).foregroundStyle(.secondary)
+                Spacer()
+                Button("Готово") { dismiss() }.keyboardShortcut(.defaultAction)
+            }
+        }
+        .padding(20).frame(width: 540)
+    }
+
+    private func download(_ code: String) {
+        downloading.insert(code); err = nil
+        Task {
+            do {
+                try await Tesseract.download(code, best: state.tessBest)
+                installed = Tesseract.installed()
+                if !state.tessLanguages.contains(code) { state.tessLanguages.append(code) }
+            } catch { err = error.localizedDescription }
+            downloading.remove(code)
+        }
     }
 }
