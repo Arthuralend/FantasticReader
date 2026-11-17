@@ -9,8 +9,9 @@ struct GeminiError: LocalizedError {
 /// поддерживаются все языки, которые понимает модель.
 struct GeminiClient {
     let apiKey: String
-    // Если модель устареет, замените на актуальную из документации Gemini API.
-    var model = "gemini-2.5-flash"
+    // Модель можно сменить в настройках приложения, если Google выпустит новую.
+    static let defaultModel = "gemini-3.8-flash"
+    var model = GeminiClient.defaultModel
 
     private let prompt = """
     Extract ALL text from this document exactly as written, in its original language(s) and script. \

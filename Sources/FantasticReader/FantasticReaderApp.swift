@@ -3,113 +3,223 @@ import UniformTypeIdentifiers
 
 @main
 struct FantasticReaderApp: App {
+    @StateObject private var state = AppState()
     init() {
         NSApplication.shared.setActivationPolicy(.regular)
         NSApplication.shared.activate(ignoringOtherApps: true)
     }
     var body: some Scene {
-        WindowGroup("FantasticReader") { ContentView() }
-            .defaultSize(width: 900, height: 640)
+        WindowGroup("FantasticReader") {
+            ContentView().environmentObject(state)
+        }
+        .defaultSize(width: 1180, height: 760)
     }
 }
+
+private let accent = Color(red: 0.76, green: 0.10, blue: 0.14)
 
 struct ContentView: View {
-    @State private var apiKey = Keychain.load() ?? ""
-    @State private var fileURL: URL?
-    @State private var preview: NSImage?
-    @State private var text = ""
-    @State private var busy = false
-    @State private var error: String?
+    @EnvironmentObject var state: AppState
     @State private var showImporter = false
-    @State private var showKey = false
 
     var body: some View {
-        VStack(spacing: 12) {
-            HStack {
-                Button("Открыть файл…") { showImporter = true }
-                Button("Распознать") { Task { await recognize() } }
-                    .disabled(fileURL == nil || busy)
-                if busy { ProgressView().controlSize(.small) }
-                Spacer()
-                Button("Сохранить PDF") { save(pdf: true) }.disabled(fileURL == nil)
-                Button("Сохранить DOCX") { save(pdf: false) }.disabled(text.isEmpty)
-                Button { showKey.toggle() } label: { Image(systemName: "key") }
-                    .popover(isPresented: $showKey) { keyPanel }
+        VStack(spacing: 0) {
+            ribbon
+            Divider()
+            HSplitView {
+                pagesPane.frame(minWidth: 150, idealWidth: 180, maxWidth: 260)
+                imagePane.frame(minWidth: 300)
+                textPane.frame(minWidth: 300)
             }
-            HStack(spacing: 12) {
-                Group {
-                    if let preview {
-                        Image(nsImage: preview).resizable().scaledToFit()
-                    } else {
-                        Text("Перетащите сюда фото или PDF").foregroundStyle(.secondary)
+            Divider()
+            statusBar
+        }
+        .tint(accent)
+        .fileImporter(isPresented: $showImporter, allowedContentTypes: [.image, .pdf], allowsMultipleSelection: true) { r in
+            if case .success(let urls) = r { state.add(urls: urls) }
+        }
+        .onDrop(of: [.fileURL], isTargeted: nil) { providers in
+            for p in providers {
+                p.loadItem(forTypeIdentifier: UTType.fileURL.identifier) { item, _ in
+                    if let d = item as? Data, let u = URL(dataRepresentation: d, relativeTo: nil) {
+                        Task { @MainActor in state.add(urls: [u]) }
                     }
                 }
-                .frame(maxWidth: .infinity, maxHeight: .infinity)
-                .background(.quaternary.opacity(0.4))
-                .onDrop(of: [.fileURL], isTargeted: nil) { providers in
-                    providers.first?.loadItem(forTypeIdentifier: UTType.fileURL.identifier) { item, _ in
-                        if let d = item as? Data, let u = URL(dataRepresentation: d, relativeTo: nil) {
-                            DispatchQueue.main.async { load(u) }
+            }
+            return true
+        }
+        .sheet(isPresented: $state.showSettings) { SettingsView().environmentObject(state) }
+        .onAppear { if state.apiKey.isEmpty { state.showSettings = true } }
+    }
+
+    // MARK: Верхняя панель (как в FineReader)
+    private var ribbon: some View {
+        HStack(spacing: 4) {
+            RibbonButton(title: "Открыть", icon: "folder") { showImporter = true }
+            RibbonSeparator()
+            RibbonButton(title: "Распознать", icon: "text.viewfinder",
+                         disabled: state.selection == nil || state.busy) { Task { await state.recognizeSelected() } }
+            RibbonButton(title: "Распознать все", icon: "doc.text.magnifyingglass",
+                         disabled: state.pages.isEmpty || state.busy) { Task { await state.recognizeAll() } }
+            RibbonSeparator()
+            RibbonButton(title: "В PDF", icon: "doc.richtext", disabled: state.pages.isEmpty) { state.save(pdf: true) }
+            RibbonButton(title: "В DOCX", icon: "doc.plaintext",
+                         disabled: !state.pages.contains { !$0.text.isEmpty }) { state.save(pdf: false) }
+            Spacer()
+            if state.busy { ProgressView().controlSize(.small).padding(.trailing, 8) }
+            RibbonButton(title: "Настройки", icon: "gearshape") { state.showSettings = true }
+        }
+        .padding(.horizontal, 10).padding(.vertical, 4)
+        .background(LinearGradient(colors: [Color(nsColor: .controlBackgroundColor), Color(nsColor: .windowBackgroundColor)],
+                                   startPoint: .top, endPoint: .bottom))
+        .overlay(Rectangle().fill(accent).frame(height: 3), alignment: .top)
+    }
+
+    // MARK: Страницы
+    private var pagesPane: some View {
+        VStack(spacing: 0) {
+            PanelHeader(title: "Страницы")
+            List(selection: $state.selection) {
+                ForEach(Array(state.pages.enumerated()), id: \.element.id) { idx, p in
+                    VStack(spacing: 4) {
+                        ZStack(alignment: .topTrailing) {
+                            if let t = p.thumb {
+                                Image(nsImage: t).resizable().scaledToFit()
+                                    .frame(height: 120)
+                                    .shadow(radius: 1.5)
+                            }
+                            if p.done {
+                                Image(systemName: "checkmark.circle.fill").foregroundStyle(.green).padding(3)
+                            }
+                        }
+                        Text("\(idx + 1) · \(p.url.lastPathComponent)").font(.caption).lineLimit(1).truncationMode(.middle)
+                    }
+                    .tag(p.id)
+                    .padding(.vertical, 4)
+                    .contextMenu { Button("Удалить") { state.remove(p.id) } }
+                }
+            }
+            .listStyle(.sidebar)
+        }
+    }
+
+    // MARK: Изображение
+    private var imagePane: some View {
+        VStack(spacing: 0) {
+            PanelHeader(title: "Изображение")
+            ZStack {
+                Color(nsColor: .underPageBackgroundColor)
+                if let i = state.selectedIndex, let img = state.pages[i].thumb {
+                    GeometryReader { geo in
+                        ScrollView([.horizontal, .vertical]) {
+                            Image(nsImage: img).resizable().scaledToFit()
+                                .frame(width: max(geo.size.width - 24, 100) * state.zoom)
+                                .shadow(radius: 3).padding(12)
                         }
                     }
-                    return true
+                } else {
+                    VStack(spacing: 8) {
+                        Image(systemName: "square.and.arrow.down.on.square").font(.system(size: 40))
+                        Text("Перетащите сюда фото или PDF").font(.callout)
+                    }.foregroundStyle(.secondary)
                 }
-                TextEditor(text: $text).font(.body).frame(maxWidth: .infinity)
             }
-            if let error { Text(error).foregroundStyle(.red).font(.callout) }
         }
-        .padding()
-        .fileImporter(isPresented: $showImporter, allowedContentTypes: [.image, .pdf]) { r in
-            if case .success(let u) = r { load(u) }
+    }
+
+    // MARK: Текст
+    private var textPane: some View {
+        VStack(spacing: 0) {
+            PanelHeader(title: "Текст")
+            if let i = state.selectedIndex {
+                TextEditor(text: Binding(get: { state.pages.indices.contains(i) ? state.pages[i].text : "" },
+                                         set: { if state.pages.indices.contains(i) { state.pages[i].text = $0 } }))
+                    .font(.system(size: 14))
+                    .padding(4)
+            } else {
+                Color(nsColor: .textBackgroundColor)
+            }
         }
-        .onAppear { if apiKey.isEmpty { showKey = true } }
     }
 
-    private var keyPanel: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            Text("Gemini API key").font(.headline)
-            SecureField("AIza…", text: $apiKey).frame(width: 320)
-            Text("Ключ хранится в связке ключей macOS.").font(.caption).foregroundStyle(.secondary)
-            Button("Сохранить") { Keychain.save(apiKey.trimmingCharacters(in: .whitespacesAndNewlines)); showKey = false }
-        }.padding()
-    }
-
-    private func load(_ url: URL) {
-        _ = url.startAccessingSecurityScopedResource()
-        fileURL = url
-        error = nil
-        preview = url.pathExtension.lowercased() == "pdf"
-            ? PDFKitThumb.firstPage(url) : NSImage(contentsOf: url)
-    }
-
-    private func recognize() async {
-        guard let url = fileURL else { return }
-        let key = apiKey.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !key.isEmpty else { showKey = true; return }
-        busy = true; error = nil
-        defer { busy = false }
-        do {
-            let data = try Data(contentsOf: url)
-            let mime = UTType(filenameExtension: url.pathExtension)?.preferredMIMEType ?? "image/jpeg"
-            text = try await GeminiClient(apiKey: key).recognize(data: data, mimeType: mime)
-        } catch { self.error = error.localizedDescription }
-    }
-
-    private func save(pdf: Bool) {
-        let panel = NSSavePanel()
-        panel.allowedContentTypes = [pdf ? .pdf : UTType("org.openxmlformats.wordprocessingml.document")!]
-        panel.nameFieldStringValue = (fileURL?.deletingPathExtension().lastPathComponent ?? "FantasticReader") + (pdf ? ".pdf" : ".docx")
-        guard panel.runModal() == .OK, let dest = panel.url else { return }
-        do {
-            if pdf, let src = fileURL { try Exporter.savePDF(source: src, to: dest) }
-            else { try Exporter.saveDOCX(text: text, to: dest) }
-        } catch { self.error = error.localizedDescription }
+    // MARK: Строка состояния
+    private var statusBar: some View {
+        HStack(spacing: 12) {
+            if let e = state.error {
+                Label(e, systemImage: "exclamationmark.triangle.fill").foregroundStyle(.red).lineLimit(2)
+            } else {
+                Text(state.status).foregroundStyle(.secondary)
+            }
+            Spacer()
+            Text(state.model).font(.caption).foregroundStyle(.secondary)
+            Image(systemName: "minus.magnifyingglass").foregroundStyle(.secondary)
+            Slider(value: $state.zoom, in: 0.5...3).frame(width: 120)
+            Image(systemName: "plus.magnifyingglass").foregroundStyle(.secondary)
+            Text("\(Int(state.zoom * 100))%").font(.caption).frame(width: 40, alignment: .trailing)
+        }
+        .font(.callout)
+        .padding(.horizontal, 10).padding(.vertical, 5)
+        .background(Color(nsColor: .windowBackgroundColor))
     }
 }
 
-import PDFKit
-enum PDFKitThumb {
-    static func firstPage(_ url: URL) -> NSImage? {
-        PDFDocument(url: url)?.page(at: 0)?.thumbnail(of: CGSize(width: 800, height: 1100), for: .mediaBox)
+struct RibbonButton: View {
+    let title: String
+    let icon: String
+    var disabled = false
+    let action: () -> Void
+    @State private var hover = false
+
+    var body: some View {
+        Button(action: action) {
+            VStack(spacing: 4) {
+                Image(systemName: icon).font(.system(size: 22)).frame(height: 26)
+                Text(title).font(.system(size: 11))
+            }
+            .frame(minWidth: 70).padding(.vertical, 6).padding(.horizontal, 4)
+            .background(RoundedRectangle(cornerRadius: 6).fill(hover && !disabled ? accent.opacity(0.12) : .clear))
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .foregroundStyle(disabled ? Color.secondary : Color.primary)
+        .disabled(disabled)
+        .onHover { hover = $0 }
+    }
+}
+
+struct RibbonSeparator: View {
+    var body: some View { Divider().frame(height: 40).padding(.horizontal, 4) }
+}
+
+struct PanelHeader: View {
+    let title: String
+    var body: some View {
+        HStack { Text(title).font(.system(size: 11, weight: .semibold)); Spacer() }
+            .padding(.horizontal, 8).padding(.vertical, 4)
+            .background(Color(nsColor: .windowBackgroundColor))
+            .overlay(Divider(), alignment: .bottom)
+    }
+}
+
+struct SettingsView: View {
+    @EnvironmentObject var state: AppState
+    var body: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            Text("Настройки").font(.title3.bold())
+            Text("Gemini API key").font(.headline)
+            SecureField("AIza…", text: $state.apiKey).textFieldStyle(.roundedBorder)
+            Text("Ключ хранится в связке ключей macOS. Получить: aistudio.google.com → Get API key.")
+                .font(.caption).foregroundStyle(.secondary)
+            Text("Модель").font(.headline).padding(.top, 6)
+            TextField(GeminiClient.defaultModel, text: $state.model).textFieldStyle(.roundedBorder)
+            Text("Если Google заменит модель, впишите здесь новое название.")
+                .font(.caption).foregroundStyle(.secondary)
+            HStack {
+                Spacer()
+                Button("Готово") { state.saveSettings(); state.showSettings = false }
+                    .keyboardShortcut(.defaultAction)
+            }.padding(.top, 8)
+        }
+        .padding(20).frame(width: 420)
     }
 }

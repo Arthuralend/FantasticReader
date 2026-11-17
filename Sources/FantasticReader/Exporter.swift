@@ -2,19 +2,20 @@ import AppKit
 import PDFKit
 
 enum Exporter {
-    /// PDF «как фото документа»: исходное изображение (или исходный PDF) без изменений.
-    static func savePDF(source: URL, to dest: URL) throws {
-        if source.pathExtension.lowercased() == "pdf" {
-            try? FileManager.default.removeItem(at: dest)
-            try FileManager.default.copyItem(at: source, to: dest)
-            return
-        }
-        guard let image = NSImage(contentsOf: source), let page = PDFPage(image: image) else {
-            throw GeminiError(message: "Не удалось открыть изображение")
-        }
+    /// PDF «как фото документа»: исходные изображения и PDF-файлы без изменений, одним документом.
+    static func savePDF(sources: [URL], to dest: URL) throws {
         let doc = PDFDocument()
-        doc.insert(page, at: 0)
-        guard doc.write(to: dest) else { throw GeminiError(message: "Не удалось записать PDF") }
+        for src in sources {
+            if src.pathExtension.lowercased() == "pdf" {
+                guard let pdf = PDFDocument(url: src) else { continue }
+                for i in 0..<pdf.pageCount {
+                    if let p = pdf.page(at: i) { doc.insert(p, at: doc.pageCount) }
+                }
+            } else if let image = NSImage(contentsOf: src), let page = PDFPage(image: image) {
+                doc.insert(page, at: doc.pageCount)
+            }
+        }
+        guard doc.pageCount > 0, doc.write(to: dest) else { throw GeminiError(message: "Не удалось записать PDF") }
     }
 
     /// DOCX только с текстом, без изображений.
