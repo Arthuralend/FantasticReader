@@ -21,6 +21,18 @@ final class AppState: ObservableObject {
     @Published var apiKey = Keychain.load() ?? ""
     @Published var model = UserDefaults.standard.string(forKey: "model") ?? GeminiClient.defaultModel
     @Published var showSettings = false
+    @Published var availableModels: [ModelInfo] = []
+    @Published var modelsStatus: String?
+
+    func loadModels() async {
+        let key = apiKey.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !key.isEmpty else { modelsStatus = "Сначала введите ключ"; return }
+        modelsStatus = "Загрузка…"
+        do {
+            availableModels = try await GeminiClient.listModels(apiKey: key)
+            modelsStatus = "Найдено моделей: \(availableModels.count)"
+        } catch { modelsStatus = error.localizedDescription }
+    }
 
     var selectedIndex: Int? { pages.firstIndex { $0.id == selection } }
 

@@ -212,7 +212,16 @@ struct SettingsView: View {
                 .font(.caption).foregroundStyle(.secondary)
             Text("Модель").font(.headline).padding(.top, 6)
             TextField(GeminiClient.defaultModel, text: $state.model).textFieldStyle(.roundedBorder)
-            Text("Если Google заменит модель, впишите здесь новое название.")
+            HStack {
+                Button("Загрузить список моделей") { Task { await state.loadModels() } }
+                if let st = state.modelsStatus { Text(st).font(.caption).foregroundStyle(.secondary) }
+            }
+            if !state.availableModels.isEmpty {
+                Picker("Выбрать", selection: $state.model) {
+                    ForEach(state.availableModels) { m in Text("\(m.title) (\(m.id))").tag(m.id) }
+                }
+            }
+            Text("Название модели в приложении Gemini может отличаться от ID в API. Выбирайте из списка. Для OCR подойдёт любая flash-модель.")
                 .font(.caption).foregroundStyle(.secondary)
             HStack {
                 Spacer()
@@ -220,6 +229,6 @@ struct SettingsView: View {
                     .keyboardShortcut(.defaultAction)
             }.padding(.top, 8)
         }
-        .padding(20).frame(width: 420)
+        .padding(20).frame(width: 480)
     }
 }
