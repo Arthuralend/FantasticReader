@@ -8,24 +8,23 @@ import ImageIO
 enum AppleOCR {
     static let preferredLanguages = ["ru-RU", "uk-UA", "en-US"]
 
-    static func recognize(url: URL) async throws -> String {
+    static func recognize(url: URL, pageIndex: Int?) async throws -> (text: String, lines: [OCRLine]) {
         try await Task.detached(priority: .userInitiated) {
-            let pages = try images(from: url).map { try recognize(image: $0.0, orientation: $0.1) }
-            return pages.filter { !$0.isEmpty }.joined(separator: "\n\n")
+            let (img, orientation) = try image(url: url, pageIndex: pageIndex)
+            return try recognize(image: img, orientation: orientation)
         }.value
     }
 
-    // MARK: Загрузка изображений (фото с учётом поворота из EXIF, PDF — все страницы)
-    private static func images(from url: URL) throws -> [(CGImage, CGImagePropertyOrientation)] {
-        if url.pathExtension.lowercased() == "pdf" {
-            guard let doc = PDFDocument(url: url) else { throw GeminiError(message: "Не удалось открыть PDF") }
-            return (0..<doc.pageCount).compactMap { i in
-                guard let page = doc.page(at: i) else { return nil }
-                let b = page.bounds(for: .mediaBox)
-                let img = page.thumbnail(of: CGSize(width: b.width * 3, height: b.height * 3), for: .mediaBox)
-                guard let cg = img.cgImage(forProposedRect: nil, context: nil, hints: nil) else { return nil }
-                return (cg, .up)
+    // MARK: Изображение страницы (фото с учётом поворота из EXIF, или страница PDF)
+    private static func image(url: URL, pageIndex: Int?) throws -> (CGImage, CGImagePropertyOrientation) {
+        if let idx = pageIndex {
+            guard let page = PDFDocument(url: url)?.page(at: idx) else { throw GeminiError(message: "Не удалось открыть страницу PDF") }
+            let b = page.bounds(for: .mediaBox)
+            let img = page.thumbnail(of: CGSize(width: b.width * 3, height: b.height * 3), for: .mediaBox)
+            guard let cg = img.cgImage(forProposedRect: nil, context: nil, hints: nil) else {
+                throw GeminiError(message: "Не удалось отрисовать страницу PDF")
             }
+            return (cg, .up)
         }
         guard let src = CGImageSourceCreateWithURL(url as CFURL, nil),
               let cg = CGImageSourceCreateImageAtIndex(src, 0, nil) else {
@@ -33,10 +32,10 @@ enum AppleOCR {
         }
         let props = CGImageSourceCopyPropertiesAtIndex(src, 0, nil) as? [CFString: Any]
         let raw = (props?[kCGImagePropertyOrientation] as? UInt32) ?? 1
-        return [(cg, CGImagePropertyOrientation(rawValue: raw) ?? .up)]
+        return (cg, CGImagePropertyOrientation(rawValue: raw) ?? .up)
     }
 
-    private static func recognize(image: CGImage, orientation: CGImagePropertyOrientation) throws -> String {
+    private static func recognize(image: CGImage, orientation: CGImagePropertyOrientation) throws -> (text: String, lines: [OCRLine]) {
         let req = VNRecognizeTextRequest()
         req.recognitionLevel = .accurate
         req.usesLanguageCorrection = true
@@ -54,7 +53,7 @@ enum AppleOCR {
         let s = v.sorted(); return s.isEmpty ? 0 : s[s.count / 2]
     }
 
-    private static func layout(_ obs: [VNRecognizedTextObservation]) -> String {
+    private static func layout(_ obs: [VNRecognizedTextObservation]) -> (text: String, lines: [OCRLine]) {
         // Vision: координаты 0…1, начало снизу слева
         let items = obs.compactMap { o -> Line? in
             guard let t = o.topCandidates(1).first?.string else { return nil }
@@ -71,7 +70,8 @@ enum AppleOCR {
                 lines[lines.count - 1] = last
             } else { lines.append(it) }
         }
-        guard !lines.isEmpty else { return "" }
+        guard !lines.isEmpty else { return ("", []) }
+        let boxes = lines.map { OCRLine(text: $0.text, rect: CGRect(x: $0.minX, y: $0.midY - $0.h / 2, width: $0.maxX - $0.minX, height: $0.h)) }
 
         let left = median(lines.map(\.minX))
         let right = lines.map(\.maxX).sorted()[Int(Double(lines.count - 1) * 0.9)]
@@ -114,6 +114,6 @@ enum AppleOCR {
             prev = l; prevVerse = false
         }
         flush()
-        return out.joined(separator: "\n\n")
+        return (out.joined(separator: "\n\n"), boxes)
     }
 }

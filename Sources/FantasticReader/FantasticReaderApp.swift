@@ -21,6 +21,7 @@ private let accent = Color(red: 0.76, green: 0.10, blue: 0.14)
 struct ContentView: View {
     @EnvironmentObject var state: AppState
     @State private var showImporter = false
+    @State private var showPDFOptions = false
 
     var body: some View {
         VStack(spacing: 0) {
@@ -72,9 +73,10 @@ struct ContentView: View {
             RibbonButton(title: "Распознать все", icon: "doc.text.magnifyingglass",
                          disabled: state.pages.isEmpty || state.busy) { Task { await state.recognizeAll() } }
             RibbonSeparator()
-            RibbonButton(title: "В PDF", icon: "doc.richtext", disabled: state.pages.isEmpty) { state.save(pdf: true) }
+            RibbonButton(title: "В PDF", icon: "doc.richtext", disabled: state.pages.isEmpty) { showPDFOptions = true }
+                .popover(isPresented: $showPDFOptions, arrowEdge: .bottom) { pdfOptions }
             RibbonButton(title: "В DOCX", icon: "doc.plaintext",
-                         disabled: !state.pages.contains { !$0.text.isEmpty }) { state.save(pdf: false) }
+                         disabled: !state.pages.contains { !$0.text.isEmpty }) { state.saveDOCX() }
             Spacer()
             if state.busy { ProgressView().controlSize(.small).padding(.trailing, 8) }
             RibbonButton(title: "Настройки", icon: "gearshape") { state.showSettings = true }
@@ -83,6 +85,27 @@ struct ContentView: View {
         .background(LinearGradient(colors: [Color(nsColor: .controlBackgroundColor), Color(nsColor: .windowBackgroundColor)],
                                    startPoint: .top, endPoint: .bottom))
         .overlay(Rectangle().fill(accent).frame(height: 3), alignment: .top)
+    }
+
+    private var pdfOptions: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            Text("Сохранить PDF").font(.headline)
+            Picker("", selection: $state.pdfMode) {
+                ForEach(PDFMode.allCases) { Text($0.title).tag($0) }
+            }
+            .pickerStyle(.radioGroup).labelsHidden()
+            Text(state.engine == .apple
+                 ? "Текстовый слой ложится точно на строки изображения."
+                 : "С Gemini текстовый слой не привязан к строкам: поиск и копирование работают, выделение — приблизительно.")
+                .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+            Text("Шрифт: \(state.fontFamily.isEmpty ? "авто" : state.fontFamily), \(Int(state.fontSize)) pt — меняется в Настройках")
+                .font(.caption).foregroundStyle(.secondary)
+            HStack {
+                Spacer()
+                Button("Сохранить…") { showPDFOptions = false; state.savePDF() }.keyboardShortcut(.defaultAction)
+            }
+        }
+        .padding(16).frame(width: 380)
     }
 
     // MARK: Страницы
@@ -102,7 +125,7 @@ struct ContentView: View {
                                 Image(systemName: "checkmark.circle.fill").foregroundStyle(.green).padding(3)
                             }
                         }
-                        Text("\(idx + 1) · \(p.url.lastPathComponent)").font(.caption).lineLimit(1).truncationMode(.middle)
+                        Text("\(idx + 1) · \(p.label)").font(.caption).lineLimit(1).truncationMode(.middle)
                     }
                     .tag(p.id)
                     .padding(.vertical, 4)
@@ -119,7 +142,7 @@ struct ContentView: View {
             PanelHeader(title: "Изображение")
             ZStack {
                 Color(nsColor: .underPageBackgroundColor)
-                if let i = state.selectedIndex, let img = state.pages[i].thumb {
+                if let img = state.preview {
                     GeometryReader { geo in
                         ScrollView([.horizontal, .vertical]) {
                             Image(nsImage: img).resizable().scaledToFit()
@@ -233,12 +256,27 @@ struct SettingsView: View {
             }
             Text("Название модели в приложении Gemini может отличаться от ID в API. Выбирайте из списка. Для OCR подойдёт любая flash-модель.")
                 .font(.caption).foregroundStyle(.secondary)
+            Text("Шрифт для DOCX и PDF").font(.headline).padding(.top, 6)
+            HStack {
+                Picker("", selection: $state.fontFamily) {
+                    Text("Авто (под алфавит текста)").tag("")
+                    Divider()
+                    ForEach(NSFontManager.shared.availableFontFamilies, id: \.self) { Text($0).tag($0) }
+                }
+                .labelsHidden()
+                Stepper("\(Int(state.fontSize)) pt", value: $state.fontSize, in: 8...28)
+            }
+            Text("Образец: Съешь же ещё этих мягких булок · Sample · Օրինակ")
+                .font(.custom(state.fontFamily.isEmpty ? "Times New Roman" : state.fontFamily, size: state.fontSize))
+                .lineLimit(1)
+            Text("Если в выбранном шрифте нет букв нужного языка, Word подставит другой. «Авто» подбирает подходящий сам.")
+                .font(.caption).foregroundStyle(.secondary)
             HStack {
                 Spacer()
                 Button("Готово") { state.saveSettings(); state.showSettings = false }
                     .keyboardShortcut(.defaultAction)
             }.padding(.top, 8)
         }
-        .padding(20).frame(width: 480)
+        .padding(20).frame(width: 520)
     }
 }

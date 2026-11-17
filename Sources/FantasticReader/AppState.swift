@@ -2,12 +2,37 @@ import SwiftUI
 import PDFKit
 import UniformTypeIdentifiers
 
+/// Строка текста с положением на странице (0…1, начало снизу слева) — для текстового слоя PDF.
+struct OCRLine {
+    let text: String
+    let rect: CGRect
+}
+
+/// Одна страница: фото или конкретная страница PDF-файла.
 struct PageItem: Identifiable {
     let id = UUID()
     let url: URL
+    let pageIndex: Int?          // nil — фото; число — номер страницы в PDF
     var thumb: NSImage?
     var text = ""
     var done = false
+    var lines: [OCRLine] = []
+
+    var label: String {
+        pageIndex.map { "\(url.deletingPathExtension().lastPathComponent) · стр. \($0 + 1)" } ?? url.lastPathComponent
+    }
+}
+
+enum PDFMode: String, CaseIterable, Identifiable {
+    case image, imageText, text
+    var id: String { rawValue }
+    var title: String {
+        switch self {
+        case .image: return "Только изображение (как скан)"
+        case .imageText: return "Изображение + текстовый слой (поиск и копирование)"
+        case .text: return "Только текст выбранным шрифтом"
+        }
+    }
 }
 
 enum OCREngine: String, CaseIterable, Identifiable {
@@ -19,7 +44,8 @@ enum OCREngine: String, CaseIterable, Identifiable {
 @MainActor
 final class AppState: ObservableObject {
     @Published var pages: [PageItem] = []
-    @Published var selection: UUID?
+    @Published var selection: UUID? { didSet { updatePreview() } }
+    @Published var preview: NSImage?
     @Published var busy = false
     @Published var status = "Откройте фото или PDF"
     @Published var error: String?
@@ -29,6 +55,16 @@ final class AppState: ObservableObject {
     @Published var showSettings = false
     @Published var engine = OCREngine(rawValue: UserDefaults.standard.string(forKey: "engine") ?? "") ?? .gemini {
         didSet { UserDefaults.standard.set(engine.rawValue, forKey: "engine") }
+    }
+    @Published var pdfMode = PDFMode(rawValue: UserDefaults.standard.string(forKey: "pdfMode") ?? "") ?? .imageText {
+        didSet { UserDefaults.standard.set(pdfMode.rawValue, forKey: "pdfMode") }
+    }
+    /// Пустая строка — шрифт подбирается автоматически под алфавит текста.
+    @Published var fontFamily = UserDefaults.standard.string(forKey: "fontFamily") ?? "" {
+        didSet { UserDefaults.standard.set(fontFamily, forKey: "fontFamily") }
+    }
+    @Published var fontSize = (UserDefaults.standard.object(forKey: "fontSize") as? Double) ?? 12 {
+        didSet { UserDefaults.standard.set(fontSize, forKey: "fontSize") }
     }
     @Published var availableModels: [ModelInfo] = []
     @Published var modelsStatus: String?
@@ -55,14 +91,29 @@ final class AppState: ObservableObject {
     func add(urls: [URL]) {
         for u in urls {
             _ = u.startAccessingSecurityScopedResource()
-            let isPDF = u.pathExtension.lowercased() == "pdf"
-            let img: NSImage? = isPDF
-                ? PDFDocument(url: u)?.page(at: 0)?.thumbnail(of: CGSize(width: 1600, height: 2200), for: .mediaBox)
-                : NSImage(contentsOf: u)
-            pages.append(PageItem(url: u, thumb: img))
+            if u.pathExtension.lowercased() == "pdf" {
+                guard let doc = PDFDocument(url: u) else { error = "Не удалось открыть \(u.lastPathComponent)"; continue }
+                for i in 0..<doc.pageCount {
+                    let t = doc.page(at: i)?.thumbnail(of: CGSize(width: 300, height: 420), for: .mediaBox)
+                    pages.append(PageItem(url: u, pageIndex: i, thumb: t))
+                }
+            } else {
+                pages.append(PageItem(url: u, pageIndex: nil, thumb: NSImage(contentsOf: u)))
+            }
         }
         if selection == nil { selection = pages.first?.id }
         status = "Страниц: \(pages.count)"
+    }
+
+    /// Крупное изображение выбранной страницы для центральной панели.
+    private func updatePreview() {
+        guard let i = selectedIndex else { preview = nil; return }
+        let p = pages[i]
+        if let idx = p.pageIndex {
+            preview = PDFDocument(url: p.url)?.page(at: idx)?.thumbnail(of: CGSize(width: 1600, height: 2200), for: .mediaBox)
+        } else {
+            preview = p.thumb
+        }
     }
 
     func remove(_ id: UUID) {
@@ -95,30 +146,60 @@ final class AppState: ObservableObject {
 
     private func recognize(index i: Int) async throws {
         status = "Распознавание: страница \(i + 1) из \(pages.count)…"
-        let url = pages[i].url
-        let text: String
+        let item = pages[i]
+        var text = ""
+        var lines: [OCRLine] = []
         if engine == .apple {
-            text = try await AppleOCR.recognize(url: url)
+            let r = try await AppleOCR.recognize(url: item.url, pageIndex: item.pageIndex)
+            text = r.text; lines = r.lines
             if text.isEmpty { throw GeminiError(message: "Apple Vision не нашёл текст") }
         } else {
-            let data = try Data(contentsOf: url)
-            let mime = UTType(filenameExtension: url.pathExtension)?.preferredMIMEType ?? "image/jpeg"
+            let (data, mime) = try payload(item)
             let client = GeminiClient(apiKey: apiKey.trimmingCharacters(in: .whitespacesAndNewlines), model: model)
             text = try await client.recognize(data: data, mimeType: mime)
         }
-        guard pages.indices.contains(i) else { return }
-        pages[i].text = text
-        pages[i].done = true
+        guard let j = pages.firstIndex(where: { $0.id == item.id }) else { return }
+        pages[j].text = text
+        pages[j].lines = lines
+        pages[j].done = true
     }
 
-    func save(pdf: Bool) {
+    /// Данные для Gemini: фото как есть, страница PDF — отдельным одностраничным PDF.
+    private func payload(_ item: PageItem) throws -> (Data, String) {
+        if let idx = item.pageIndex {
+            guard let page = PDFDocument(url: item.url)?.page(at: idx)?.copy() as? PDFPage else {
+                throw GeminiError(message: "Не удалось прочитать страницу PDF")
+            }
+            let single = PDFDocument()
+            single.insert(page, at: 0)
+            guard let d = single.dataRepresentation() else { throw GeminiError(message: "Не удалось подготовить страницу") }
+            return (d, "application/pdf")
+        }
+        let mime = UTType(filenameExtension: item.url.pathExtension)?.preferredMIMEType ?? "image/jpeg"
+        return (try Data(contentsOf: item.url), mime)
+    }
+
+    private var baseName: String { pages.first?.url.deletingPathExtension().lastPathComponent ?? "FantasticReader" }
+    private var allText: String { pages.map(\.text).filter { !$0.isEmpty }.joined(separator: "\n\n") }
+
+    func savePDF() {
         let panel = NSSavePanel()
-        panel.allowedContentTypes = [pdf ? .pdf : UTType("org.openxmlformats.wordprocessingml.document")!]
-        panel.nameFieldStringValue = (pages.first?.url.deletingPathExtension().lastPathComponent ?? "FantasticReader") + (pdf ? ".pdf" : ".docx")
+        panel.allowedContentTypes = [.pdf]
+        panel.nameFieldStringValue = baseName + ".pdf"
         guard panel.runModal() == .OK, let dest = panel.url else { return }
         do {
-            if pdf { try Exporter.savePDF(sources: pages.map(\.url), to: dest) }
-            else { try Exporter.saveDOCX(text: pages.map(\.text).filter { !$0.isEmpty }.joined(separator: "\n\n"), to: dest) }
+            try Exporter.savePDF(pages: pages, mode: pdfMode, family: fontFamily, size: CGFloat(fontSize), to: dest)
+            status = "Сохранено: \(dest.lastPathComponent)"
+        } catch { self.error = error.localizedDescription }
+    }
+
+    func saveDOCX() {
+        let panel = NSSavePanel()
+        panel.allowedContentTypes = [UTType("org.openxmlformats.wordprocessingml.document")!]
+        panel.nameFieldStringValue = baseName + ".docx"
+        guard panel.runModal() == .OK, let dest = panel.url else { return }
+        do {
+            try Exporter.saveDOCX(text: allText, family: fontFamily, size: CGFloat(fontSize), to: dest)
             status = "Сохранено: \(dest.lastPathComponent)"
         } catch { self.error = error.localizedDescription }
     }
