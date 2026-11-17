@@ -62,7 +62,7 @@ struct ContentView: View {
                 Picker("", selection: $state.engine) {
                     ForEach(OCREngine.allCases) { Text($0.title).tag($0) }
                 }
-                .pickerStyle(.segmented).labelsHidden().frame(width: 300)
+                .pickerStyle(.segmented).labelsHidden().frame(width: 400)
                 .help("Gemini — облако, все языки. Apple Vision — на Mac: русский, украинский, английский и др. Tesseract — на Mac, языки скачиваются в Настройках.")
                 Text("Режим распознавания").font(.system(size: 11))
             }
@@ -184,7 +184,7 @@ struct ContentView: View {
                 Text(state.status).foregroundStyle(.secondary)
             }
             Spacer()
-            Text(state.engine == .apple ? "Apple Vision · на устройстве" : state.engine == .tesseract ? "Tesseract · \(state.tessLanguages.joined(separator: "+"))" : state.model).font(.caption).foregroundStyle(.secondary)
+            Text(state.engine == .apple ? "Apple Vision · на устройстве" : state.engine == .cloudVision ? "Google Cloud Vision" : state.engine == .tesseract ? "Tesseract · \(state.tessLanguages.joined(separator: "+"))" : state.model).font(.caption).foregroundStyle(.secondary)
             Image(systemName: "minus.magnifyingglass").foregroundStyle(.secondary)
             Slider(value: $state.zoom, in: 0.5...3).frame(width: 120)
             Image(systemName: "plus.magnifyingglass").foregroundStyle(.secondary)
@@ -257,6 +257,12 @@ struct SettingsView: View {
             }
             Text("Название модели в приложении Gemini может отличаться от ID в API. Выбирайте из списка. Для OCR подойдёт любая flash-модель.")
                 .font(.caption).foregroundStyle(.secondary)
+            Text("Google Cloud Vision").font(.headline).padding(.top, 6)
+            SecureField("Ключ Cloud Vision API", text: $state.visionKey).textFieldStyle(.roundedBorder)
+            TextField("Подсказки языков, напр. hy, ru (пусто — автоопределение)", text: $state.visionHints)
+                .textFieldStyle(.roundedBorder)
+            Text("Ключ из console.cloud.google.com: включите Cloud Vision API → Credentials → Create API key. Ключ Gemini здесь не подходит.")
+                .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
             Text("Tesseract").font(.headline).padding(.top, 6)
             HStack {
                 Button("Языки Tesseract…") { showLangs = true }

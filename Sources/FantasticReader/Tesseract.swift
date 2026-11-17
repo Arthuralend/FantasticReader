@@ -114,7 +114,7 @@ enum Tesseract {
     }
 
     /// Фото с применённым поворотом из EXIF (Tesseract его не учитывает) или страница PDF.
-    private static func orientedImage(url: URL, pageIndex: Int?) throws -> CGImage {
+    static func orientedImage(url: URL, pageIndex: Int?) throws -> CGImage {
         if pageIndex != nil { return try AppleOCR.image(url: url, pageIndex: pageIndex).0 }
         let opts: [CFString: Any] = [kCGImageSourceCreateThumbnailFromImageAlways: true,
                                      kCGImageSourceCreateThumbnailWithTransform: true,

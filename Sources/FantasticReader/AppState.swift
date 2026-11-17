@@ -36,13 +36,14 @@ enum PDFMode: String, CaseIterable, Identifiable {
 }
 
 enum OCREngine: String, CaseIterable, Identifiable {
-    case gemini, apple, tesseract
+    case gemini, apple, tesseract, cloudVision
     var id: String { rawValue }
     var title: String {
         switch self {
         case .gemini: return "Gemini"
         case .apple: return "Apple Vision"
         case .tesseract: return "Tesseract"
+        case .cloudVision: return "Cloud Vision"
         }
     }
 }
@@ -78,6 +79,11 @@ final class AppState: ObservableObject {
     @Published var tessBest = UserDefaults.standard.bool(forKey: "tessBest") {
         didSet { UserDefaults.standard.set(tessBest, forKey: "tessBest") }
     }
+    @Published var visionKey = Keychain.load(account: Keychain.visionAccount) ?? ""
+    /// Подсказки языков для Cloud Vision, напр. "hy, ru". Пусто — автоопределение.
+    @Published var visionHints = UserDefaults.standard.string(forKey: "visionHints") ?? "" {
+        didSet { UserDefaults.standard.set(visionHints, forKey: "visionHints") }
+    }
     @Published var availableModels: [ModelInfo] = []
     @Published var modelsStatus: String?
 
@@ -95,6 +101,7 @@ final class AppState: ObservableObject {
 
     func saveSettings() {
         Keychain.save(apiKey.trimmingCharacters(in: .whitespacesAndNewlines))
+        Keychain.save(visionKey.trimmingCharacters(in: .whitespacesAndNewlines), account: Keychain.visionAccount)
         let m = model.trimmingCharacters(in: .whitespacesAndNewlines)
         model = m.isEmpty ? GeminiClient.defaultModel : m
         UserDefaults.standard.set(model, forKey: "model")
@@ -150,6 +157,7 @@ final class AppState: ObservableObject {
 
     private func run(_ work: () async throws -> Void) async {
         if engine == .gemini && apiKey.trimmingCharacters(in: .whitespaces).isEmpty { showSettings = true; return }
+        if engine == .cloudVision && visionKey.trimmingCharacters(in: .whitespaces).isEmpty { showSettings = true; return }
         busy = true; error = nil
         defer { busy = false }
         do { try await work(); status = "Готово" }
@@ -165,6 +173,13 @@ final class AppState: ObservableObject {
             let r = try await AppleOCR.recognize(url: item.url, pageIndex: item.pageIndex)
             text = r.text; lines = r.lines
             if text.isEmpty { throw GeminiError(message: "Apple Vision не нашёл текст") }
+        } else if engine == .cloudVision {
+            let hints = visionHints.split(whereSeparator: { $0 == "," || $0 == " " || $0 == "+" }).map(String.init)
+            let r = try await CloudVision.recognize(url: item.url, pageIndex: item.pageIndex,
+                                                    apiKey: visionKey.trimmingCharacters(in: .whitespacesAndNewlines),
+                                                    languageHints: hints)
+            text = r.text; lines = r.lines
+            if text.isEmpty { throw GeminiError(message: "Cloud Vision не нашёл текст") }
         } else if engine == .tesseract {
             let r = try await Tesseract.recognize(url: item.url, pageIndex: item.pageIndex, languages: tessLanguages)
             text = r.text; lines = r.lines
