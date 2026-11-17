@@ -19,4 +19,7 @@ jobs:
         if: startsWith(github.ref, 'refs/tags/')
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: gh release create "${{ github.ref_name }}" FantasticReader.dmg --title "FantasticReader ${{ github.ref_name }}" --notes "Скачайте FantasticReader.dmg, откройте и перетащите приложение в Applications. Если macOS блокирует запуск: правый клик → Открыть."
+        run: |
+          gh release create "${{ github.ref_name }}" FantasticReader.dmg \
+            --title "FantasticReader ${{ github.ref_name }}" \
+            --notes "Скачайте FantasticReader.dmg, откройте и перетащите приложение в Applications. Если macOS блокирует запуск - правый клик, Открыть."
