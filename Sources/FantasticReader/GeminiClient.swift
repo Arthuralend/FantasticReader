@@ -14,10 +14,19 @@ struct GeminiClient {
     var model = GeminiClient.defaultModel
 
     private let prompt = """
-    Extract ALL text from this document exactly as written, in its original language(s) and script. \
-    Do not translate, summarize or comment. Preserve paragraphs, line breaks, lists and the reading order \
-    (including right-to-left scripts). Render tables as tab-separated rows. \
-    Output only the extracted text.
+    Transcribe ALL text from this document in its original language(s) and script. \
+    Do not translate, summarize or add comments. Output only the text.
+
+    Rebuild clean, readable text instead of copying the physical line layout of the page:
+    - Join lines that belong to the same paragraph into ONE line. Remove end-of-line hyphenation \
+    (join the two halves of the word without the hyphen).
+    - Separate paragraphs with exactly one empty line. Never use spaces or tabs for indentation or alignment.
+    - Write letter-spaced words normally (e.g. "W O R D" -> "WORD").
+    - Omit purely decorative character runs (like ",,,,," or "*****" used as ornaments).
+    - Titles and headings: start the line with "# ".
+    - Poems, epigraphs and other text where line breaks matter: keep each verse on its own line \
+    and start EVERY such line with "> ".
+    - Keep dialogue dashes and punctuation as in the original. Tables: tab-separated rows.
     """
 
     func recognize(data: Data, mimeType: String) async throws -> String {
