@@ -298,7 +298,7 @@ struct TesseractLanguagesView: View {
     @State private var err: String?
 
     private var filtered: [Tesseract.Language] {
-        Tesseract.languages
+        Tesseract.allLanguages(installed: installed)
             .filter { search.isEmpty || $0.name.localizedCaseInsensitiveContains(search) || $0.code.contains(search.lowercased()) }
             .sorted { (installed.contains($0.code) ? 0 : 1, $0.name) < (installed.contains($1.code) ? 0 : 1, $1.name) }
     }
@@ -349,7 +349,11 @@ struct TesseractLanguagesView: View {
                 }
             }
             .frame(height: 340)
-            if let err { Text(err).font(.caption).foregroundStyle(.red) }
+            HStack {
+                Button("Добавить файл .traineddata…") { importFile() }
+                Text("например модель Calfa, скачанная вручную").font(.caption).foregroundStyle(.secondary)
+            }
+            if let err { Text(err).font(.caption).foregroundStyle(.red).textSelection(.enabled) }
             HStack {
                 Text("Используются: \(state.tessLanguages.isEmpty ? "—" : state.tessLanguages.joined(separator: " + "))")
                     .font(.caption).foregroundStyle(.secondary)
@@ -358,6 +362,20 @@ struct TesseractLanguagesView: View {
             }
         }
         .padding(20).frame(width: 540)
+    }
+
+    private func importFile() {
+        let panel = NSOpenPanel()
+        panel.allowedContentTypes = [UTType(filenameExtension: "traineddata") ?? .data]
+        panel.allowsMultipleSelection = true
+        guard panel.runModal() == .OK else { return }
+        do {
+            for u in panel.urls {
+                let code = try Tesseract.importModel(from: u)
+                if !state.tessLanguages.contains(code) { state.tessLanguages.append(code) }
+            }
+            installed = Tesseract.installed()
+        } catch { err = error.localizedDescription }
     }
 
     private func download(_ code: String) {

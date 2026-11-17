@@ -22,8 +22,13 @@ enum Tesseract {
     }
 
     static func download(_ code: String, best: Bool) async throws {
-        let repo = best ? "tessdata_best" : "tessdata_fast"
-        let url = URL(string: "https://github.com/tesseract-ocr/\(repo)/raw/main/\(code).traineddata")!
+        let url: URL
+        if let extra = extraModels.first(where: { $0.code == code }) {
+            url = try await huggingFaceModelURL(repo: extra.repo)
+        } else {
+            let repo = best ? "tessdata_best" : "tessdata_fast"
+            url = URL(string: "https://github.com/tesseract-ocr/\(repo)/raw/main/\(code).traineddata")!
+        }
         let (tmp, resp) = try await URLSession.shared.download(from: url)
         guard (resp as? HTTPURLResponse)?.statusCode == 200 else {
             throw GeminiError(message: "Не удалось скачать язык \(code)")
@@ -31,6 +36,36 @@ enum Tesseract {
         let dest = dataDir.appendingPathComponent("\(code).traineddata")
         try? FileManager.default.removeItem(at: dest)
         try FileManager.default.moveItem(at: tmp, to: dest)
+    }
+
+    /// Находит файл .traineddata в репозитории Hugging Face через его API.
+    private static func huggingFaceModelURL(repo: String) async throws -> URL {
+        let api = URL(string: "https://huggingface.co/api/models/\(repo)")!
+        let (data, resp) = try await URLSession.shared.data(from: api)
+        guard (resp as? HTTPURLResponse)?.statusCode == 200,
+              let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+            throw GeminiError(message: "Hugging Face недоступен. Скачайте файл вручную: huggingface.co/\(repo) и нажмите «Добавить файл…»")
+        }
+        let files = (json["siblings"] as? [[String: Any]] ?? []).compactMap { $0["rfilename"] as? String }
+            .filter { $0.hasSuffix(".traineddata") }
+        guard let file = files.first(where: { $0.lowercased().contains("calfa") }) ?? files.first else {
+            throw GeminiError(message: "В huggingface.co/\(repo) не найден файл .traineddata. Скачайте вручную и нажмите «Добавить файл…»")
+        }
+        let path = file.split(separator: "/").map { String($0).addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) ?? String($0) }
+            .joined(separator: "/")
+        return URL(string: "https://huggingface.co/\(repo)/resolve/main/\(path)")!
+    }
+
+    /// Добавить свой файл модели (.traineddata). Имя файла станет кодом языка.
+    @discardableResult
+    static func importModel(from src: URL) throws -> String {
+        let raw = src.deletingPathExtension().lastPathComponent
+        let code = String(raw.map { $0.isLetter || $0.isNumber ? $0 : "_" })
+        guard !code.isEmpty else { throw GeminiError(message: "Неверное имя файла") }
+        let dest = dataDir.appendingPathComponent("\(code).traineddata")
+        try? FileManager.default.removeItem(at: dest)
+        try FileManager.default.copyItem(at: src, to: dest)
+        return code
     }
 
     static func delete(_ code: String) {
@@ -116,6 +151,21 @@ enum Tesseract {
 
     // MARK: Список языков tessdata
     struct Language: Identifiable { let code: String; let name: String; var id: String { code } }
+
+    /// Дополнительные модели из других источников.
+    struct ExtraModel { let code: String; let name: String; let repo: String }
+    static let extraModels = [
+        ExtraModel(code: "hye_calfa", name: "Армянский — Calfa (печать XX в., старые и повреждённые шрифты)",
+                   repo: "calfa-ai/hye-tesseract")
+    ]
+
+    /// Все языки: дополнительные модели, стандартные и добавленные вручную.
+    static func allLanguages(installed: Set<String>) -> [Language] {
+        let base = extraModels.map { Language(code: $0.code, name: $0.name) } + languages
+        let known = Set(base.map(\.code))
+        let custom = installed.subtracting(known).sorted().map { Language(code: $0, name: "Свой файл: \($0)") }
+        return base + custom
+    }
 
     static let languages: [Language] = [
         ("afr","Африкаанс"),("amh","Амхарский"),("ara","Арабский"),("asm","Ассамский"),("aze","Азербайджанский"),
